@@ -9,7 +9,7 @@ POSTER_TOKEN = os.getenv('POSTER_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GROUP_CHAT_ID = int(os.getenv('GROUP_CHAT_ID'))
 
-# Клавиатура — только одна кнопка
+# Клавиатура
 keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True,
     one_time_keyboard=False,
@@ -22,37 +22,49 @@ keyboard = ReplyKeyboardMarkup(
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot)
 
-# Получение выручки за день
-def get_day_revenue():
+# Получение выручки по официантам (без суммирования)
+def get_waiters_revenue():
     today = datetime.now().strftime('%Y%m%d')
     url = (
-        f'https://joinposter.com/api/dash.getSales?'
+        f'https://joinposter.com/api/dash.getWaitersSales?'
         f'token={POSTER_TOKEN}&dateFrom={today}&dateTo={today}'
     )
     try:
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
-        sales = resp.json().get('response', [])
-        total = sum(float(s.get('total_sum', 0)) for s in sales)
-        return total
+        return resp.json().get('response', [])
     except Exception as e:
         print(f"❌ Ошибка Poster API: {e}")
-        return None
+        return []
+
+# Формирование сообщения для Telegram
+def format_waiters_message(data):
+    if not data:
+        return "😕 Немає даних по виторгу за сьогодні."
+
+    # Сортируем по сумме
+    sorted_data = sorted(data, key=lambda x: float(x.get('sum', 0)), reverse=True)
+
+    lines = ["📅 Виторг за сьогодні:"]
+    for i, waiter in enumerate(sorted_data, start=1):
+        name = waiter.get("waiter_name", "Невідомий")
+        amount = float(waiter.get("sum", 0))
+        formatted_amount = f"{amount:,.0f}".replace(",", " ")
+        lines.append(f"{i}. {name}: {formatted_amount} грн")
+
+    return "\n".join(lines)
 
 # Обработка кнопки
 @dp.message_handler(lambda message: message.text == "📅 Виторг за день")
 async def day_revenue_handler(message: types.Message):
-    total = get_day_revenue()
-    if total is not None:
-        formatted = f"{total:,.0f}".replace(",", " ")
-        await message.answer(f"📅 Виторг за сьогодні: {formatted} грн", reply_markup=keyboard)
-    else:
-        await message.answer("❌ Не вдалося отримати виторг за день", reply_markup=keyboard)
+    data = get_waiters_revenue()
+    msg = format_waiters_message(data)
+    await message.answer(msg, reply_markup=keyboard)
 
 # Обработка /start
 @dp.message_handler(commands=['start', 'report'])
 async def start_cmd(message: types.Message):
-    await message.answer("👋 Натисніть кнопку нижче, щоб дізнатись виторг за день:", reply_markup=keyboard)
+    await message.answer("Натисніть кнопку нижче, щоб дізнатись виторг по кожному офіціанту 👇", reply_markup=keyboard)
 
 # Запуск
 if __name__ == '__main__':
