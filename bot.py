@@ -9,6 +9,7 @@ POSTER_TOKEN = os.getenv('POSTER_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 GROUP_CHAT_ID = int(os.getenv('GROUP_CHAT_ID'))
 
+# Категории
 CATEGORIES = {
     '4': 'ЧЕБУРЕКИ',
     '15': 'ЯНТИКИ',
@@ -19,6 +20,23 @@ EXTRA_CATEGORIES = {
     '154': 'ПЛОВ',
 }
 
+# Клавиатура
+keyboard = ReplyKeyboardMarkup(
+    resize_keyboard=True,
+    one_time_keyboard=False,
+    keyboard=[
+        [KeyboardButton("🔥 Звіт гаряч")],
+        [KeyboardButton("🥟 Звіт пельмені")],
+        [KeyboardButton("📅 Виторг за день")],  # Новая кнопка
+    ]
+)
+
+# Telegram и APScheduler
+bot = Bot(token=TELEGRAM_TOKEN)
+dp = Dispatcher(bot)
+scheduler = AsyncIOScheduler()
+
+# Получение продаж по категориям
 def get_categories_sales():
     today = datetime.now().strftime('%Y%m%d')
     url = (
@@ -33,6 +51,7 @@ def get_categories_sales():
         print(f"Ошибка Poster API: {e}")
         return []
 
+# Получение продаж по продуктам
 def get_products_sales():
     today = datetime.now().strftime('%Y%m%d')
     url = (
@@ -47,9 +66,11 @@ def get_products_sales():
         print(f"Ошибка Poster API: {e}")
         return []
 
+# Пельмени = subset продуктов
 def get_pelmeni_sales():
     return get_products_sales()
 
+# Основной отчёт
 def build_main_report():
     report = f'Звіт за {datetime.now().strftime("%d.%m.%Y")}:\n'
     categories_sales = get_categories_sales()
@@ -66,7 +87,7 @@ def build_main_report():
     main_lines.append(f'ИТОГО: {total_qty} шт')
 
     for cat_id, cat_name in EXTRA_CATEGORIES.items():
-        if cat_id == '154':  # Плов — продукт, а не категория
+        if cat_id == '154':  # Плов — продукт
             prod = next((p for p in products_sales if str(p.get('product_id')) == '154'), None)
             qty = int(float(prod.get('count', 0))) if prod else 0
             extra_lines.append(f'🍽️ {cat_name}: {qty} шт')
@@ -78,6 +99,7 @@ def build_main_report():
     report += '\n'.join(main_lines) + '\n\n' + '\n'.join(extra_lines)
     return report
 
+# Отчёт по пельменям
 def build_pelmeni_report():
     sales = get_pelmeni_sales()
     report = f'Звіт за {datetime.now().strftime("%d.%m.%Y")}:\n\n'
@@ -93,14 +115,12 @@ def build_pelmeni_report():
         '495': "ПЕЛЬМЕНІ ТЕЛЯ",
     }
 
-    # Пельмені в зал
     report += "🥟 ПЕЛЬМЕНІ В ЗАЛ:\n"
     for product_id, name in zal_products.items():
         prod = next((p for p in sales if str(p.get('product_id')) == str(product_id)), None)
         qty = int(float(prod.get('count', 0))) if prod else 0
         report += f"{name}: {qty} шт\n"
 
-    # Заморожені
     report += "\n❄️ ЗАМОРОЖЕНІ ПЕЛЬМЕНІ:\n"
     for product_id, name in frozen_products.items():
         prod = next((p for p in sales if str(p.get('product_id')) == str(product_id)), None)
@@ -109,19 +129,26 @@ def build_pelmeni_report():
 
     return report
 
-keyboard = ReplyKeyboardMarkup(
-    resize_keyboard=True,
-    one_time_keyboard=False,
-    keyboard=[
-        [KeyboardButton("🔥 Звіт гаряч")],
-        [KeyboardButton("🥟 Звіт пельмені")],
-    ]
-)
+# 🆕 Получение выручки за день
+def get_day_revenue():
+    today = datetime.now().strftime('%Y%m%d')
+    url = (
+        f'https://joinposter.com/api/dash.getSales?'
+        f'token={POSTER_TOKEN}&dateFrom={today}&dateTo={today}'
+    )
+    try:
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+        sales = resp.json().get('response', [])
+        total = 0.0
+        for s in sales:
+            total += float(s.get('total_sum', 0))
+        return total
+    except Exception as e:
+        print(f"Ошибка при получении выручки: {e}")
+        return None
 
-bot = Bot(token=TELEGRAM_TOKEN)
-dp = Dispatcher(bot)
-scheduler = AsyncIOScheduler()
-
+# Планировщик отчётов
 async def send_report():
     msg = build_main_report()
     await bot.send_message(GROUP_CHAT_ID, msg, reply_markup=keyboard)
@@ -136,6 +163,7 @@ def setup_jobs():
     scheduler.add_job(send_pelmeni_report, 'cron', hour=19, minute=2)
     scheduler.start()
 
+# Хендлеры кнопок
 @dp.message_handler(lambda message: message.text == "🔥 Звіт гаряч")
 async def hot_report_handler(message: types.Message):
     msg = build_main_report()
@@ -146,11 +174,21 @@ async def pelmeni_report_handler(message: types.Message):
     msg = build_pelmeni_report()
     await message.answer(msg, reply_markup=keyboard)
 
+@dp.message_handler(lambda message: message.text == "📅 Виторг за день")
+async def day_revenue_handler(message: types.Message):
+    total = get_day_revenue()
+    if total is not None:
+        formatted = f"{total:,.0f}".replace(",", " ")
+        await message.answer(f"📅 Виторг за сьогодні: {formatted} грн", reply_markup=keyboard)
+    else:
+        await message.answer("❌ Не вдалося отримати виторг за день", reply_markup=keyboard)
+
 @dp.message_handler(commands=['report'])
 async def manual_report(message: types.Message):
     msg = build_main_report()
     await message.answer(msg, reply_markup=keyboard)
 
+# Старт бота
 async def on_startup(dp):
     setup_jobs()
 
