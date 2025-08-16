@@ -4,30 +4,28 @@ from aiogram import Bot, Dispatcher, types, executor
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
 
-# ⛳️ Переменные окружения
+# 🔐 Переменные окружения
 POSTER_TOKEN = os.getenv('POSTER_TOKEN')
 CHOICE_TOKEN = os.getenv('CHOICE_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 
+# 🛑 Проверка переменных
 if not all([POSTER_TOKEN, CHOICE_TOKEN, TELEGRAM_TOKEN]):
-    raise ValueError("⛔️ Нет одной из переменных окружения: POSTER_TOKEN, CHOICE_TOKEN, TELEGRAM_TOKEN")
+    raise ValueError("⛔️ Переменные окружения не заданы!")
 
-# 🎛 Кнопки
+# 🎛 Клавиатура
 keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
 keyboard.add(KeyboardButton("📅 Виторг за день"))
-keyboard.add(KeyboardButton("📖 Бронирования"))
+keyboard.add(KeyboardButton("📖 Бронирования на сегодня"))
 
-# 🔹 Telegram
+# 🤖 Telegram Bot
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot)
 
-# 📌 Виторг по официантам
+# 📊 Получить выторг по официантам
 def get_waiters_revenue():
     today = datetime.now().strftime('%Y%m%d')
-    url = (
-        f'https://joinposter.com/api/dash.getWaitersSales?'
-        f'token={POSTER_TOKEN}&dateFrom={today}&dateTo={today}'
-    )
+    url = f'https://joinposter.com/api/dash.getWaitersSales?token={POSTER_TOKEN}&dateFrom={today}&dateTo={today}'
     try:
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
@@ -36,94 +34,87 @@ def get_waiters_revenue():
         print(f"❌ Ошибка Poster API: {e}")
         return []
 
+# 🧾 Отформатировать сообщение выторга
 def format_waiters_message(data):
     if not data:
         return "😕 Немає даних по виторгу за сьогодні."
-
     sorted_data = sorted(data, key=lambda x: float(x.get('revenue', 0)), reverse=True)
     lines = ["📅 Виторг за сьогодні:"]
-    for i, waiter in enumerate(sorted_data, start=1):
+    for i, waiter in enumerate(sorted_data, 1):
         name = waiter.get("name", "Невідомий").strip()
-        revenue_cop = float(waiter.get("revenue", 0))
-        revenue_uah = revenue_cop / 100
+        revenue_uah = float(waiter.get("revenue", 0)) / 100
         formatted = f"{revenue_uah:,.0f}".replace(",", " ")
         lines.append(f"{i}. {name}: {formatted} грн")
-
     return "\n".join(lines)
 
-# 📌 Получение бронирований из Choice
+# 📅 Получить бронирования на сегодня
 def get_today_bookings():
     now = datetime.utcnow()
     from_time = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + "Z"
-    till_time = now.replace(hour=23, minute=59, second=59, microsecond=0).isoformat() + "Z"
+    till_time = now.replace(hour=23, minute=59, second=59, microsecond=999000).isoformat() + "Z"
 
     url = "https://open-api.choiceqr.com/api/bookings/list"
-    headers = {
-        "accept": "application/json",
-        "x-token": CHOICE_TOKEN
-    }
+    headers = {"x-token": CHOICE_TOKEN}
     params = {
         "from": from_time,
         "till": till_time,
-        "periodField": "bookingDt",
-        "perPage": 100
+        "periodField": "bookingDt"
     }
 
     try:
-        resp = requests.get(url, headers=headers, params=params, timeout=20)
-        resp.raise_for_status()
-        bookings = resp.json()
-        # Фильтрация
-        future = []
-        for b in bookings:
-            if b.get("status") not in ["CREATED", "CONFIRMED"]:
-                continue
-            dt_str = b.get("dateTime", {}).get("date")
-            if not dt_str:
-                continue
-            dt_obj = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-            if dt_obj > datetime.utcnow():
-                future.append(b)
-        return future
+        response = requests.get(url, headers=headers, params=params, timeout=20)
+        response.raise_for_status()
+        bookings = response.json()
+        print("🪵 LOG — Choice API response:", bookings)
+        return bookings
     except Exception as e:
-        print(f"❌ Ошибка при получении броней: {e}")
+        print(f"❌ Ошибка Choice API: {e}")
         return []
 
+# 📄 Форматирование бронирований
 def format_booking_message(bookings):
-    if not bookings:
-        return "📖 Бронирования на сегодня:\nНет актуальных записей."
-
-    lines = ["📖 Бронирования на сегодня:"]
+    filtered = []
+    now = datetime.utcnow()
     for b in bookings:
-        name = b.get("customer", {}).get("name", "Без имени")
-        person_count = b.get("personCount", 0)
-        dt_str = b.get("dateTime", {}).get("date")
-        try:
-            dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-            time = dt.strftime("%H:%M")
-        except:
-            time = "??:??"
-        lines.append(f"🕒 {time} | 👤 {name} | 👥 {person_count} чел.")
+        status = b.get("status")
+        dt_str = b.get("dateTime")
+        customer = b.get("customer", {})
+        name = customer.get("name", "Неизвестно")
+        count = b.get("personCount", 0)
 
-    return "\n".join(lines)
+        if status in ("CREATED", "CONFIRMED") and dt_str:
+            try:
+                dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                # Без фильтра по времени — показываем все на сегодня
+                time_str = dt.strftime('%H:%M')
+                filtered.append(f"👤 {name} — {time_str}, {count} чел.")
+            except Exception as e:
+                print(f"⚠️ Проблема с датой: {e}")
 
-# 📌 Обработчики кнопок
-@dp.message_handler(lambda msg: msg.text == "📅 Виторг за день")
-async def handle_revenue(msg: types.Message):
+    if not filtered:
+        return "📖 Бронирования на сегодня:\nНет актуальных записей."
+    result = "\n".join(filtered)
+    return f"📖 Бронирования на сегодня:\n{result}"
+
+# 🔘 Обработка кнопки Виторг
+@dp.message_handler(lambda m: m.text == "📅 Виторг за день")
+async def handle_revenue(m: types.Message):
     data = get_waiters_revenue()
-    reply = format_waiters_message(data)
-    await msg.answer(reply, reply_markup=keyboard)
+    msg = format_waiters_message(data)
+    await m.answer(msg, reply_markup=keyboard)
 
-@dp.message_handler(lambda msg: msg.text == "📖 Бронирования")
-async def handle_bookings(msg: types.Message):
+# 🔘 Обработка кнопки Бронирования
+@dp.message_handler(lambda m: m.text == "📖 Бронирования на сегодня")
+async def handle_bookings(m: types.Message):
     bookings = get_today_bookings()
-    reply = format_booking_message(bookings)
-    await msg.answer(reply, reply_markup=keyboard)
+    msg = format_booking_message(bookings)
+    await m.answer(msg, reply_markup=keyboard)
 
-@dp.message_handler(commands=['start', 'menu'])
-async def start_menu(msg: types.Message):
-    await msg.answer("👋 Выберите действие:", reply_markup=keyboard)
+# 🔘 Команда /start
+@dp.message_handler(commands=["start"])
+async def cmd_start(m: types.Message):
+    await m.answer("👋 Выберите действие ниже:", reply_markup=keyboard)
 
 # ▶️ Старт
-if __name__ == "__main__":
+if __name__ == '__main__':
     executor.start_polling(dp)
