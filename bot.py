@@ -1,81 +1,73 @@
-import os
 import logging
-from aiogram import Bot, Dispatcher, types, executor
 import requests
-from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, types, executor
 
-# ВСТАВЛЕННЫЙ НАПРЯМУЮ ТОКЕН CHOICE
-CHOICE_API_TOKEN = "VlFmffA-HWXnYEm-cOXRIze-FDeVdAw"
+# ==== НАСТРОЙКИ ====
+API_TOKEN = 'ВАШ_ТОКЕН_БОТА'
+CHOICE_TOKEN = 'ВАШ_CHOICE_API_ТОКЕН'
+CHOICE_HEADERS = {
+    'Authorization': f'Bearer {CHOICE_TOKEN}',
+    'Content-Type': 'application/json'
+}
+ORG_ID = 'ВАШ_ORG_ID'  # Замените на ваш ID организации
+VENUE_ID = 'ВАШ_VENUE_ID'  # Замените на ID точки
 
-# Токен Telegram-бота (замени, если у тебя другой)
-TELEGRAM_BOT_TOKEN = "8308742614:AAFnAStBXSvc3NR9wyoEMDAvSEXJmH43iwI"
-
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
-dp = Dispatcher(bot)
-
+# ==== ЛОГИ ====
 logging.basicConfig(level=logging.INFO)
 
-# Кнопки
-@dp.message_handler(commands=['start', 'menu'])
-async def send_welcome(message: types.Message):
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    buttons = ["Выторг за день", "Бронирование"]
-    keyboard.add(*buttons)
+# ==== ИНИЦИАЛИЗАЦИЯ ====
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
+
+# ==== КНОПКИ ====
+keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+keyboard.add("Бронирование", "Выторг за день")
+
+
+# ==== ОБРАБОТКА /start ====
+@dp.message_handler(commands=['start'])
+async def cmd_start(message: types.Message):
     await message.answer("Выберите опцию:", reply_markup=keyboard)
 
-# Выторг
+
+# ==== ВЫТОРГ ЗА ДЕНЬ ====
 @dp.message_handler(lambda message: message.text == "Выторг за день")
-async def handle_turnover(message: types.Message):
-    await message.answer("Функция выторга ещё не подключена.")  # Заглушка
+async def handle_revenue(message: types.Message):
+    await message.answer("Получаю выторг...")
 
-# Бронирование
-@dp.message_handler(lambda message: message.text == "Бронирование")
-async def handle_booking(message: types.Message):
-    await message.answer("Получаю бронирования...")
-
-    now = datetime.now()
-    today_str = now.strftime("%Y-%m-%d")
-    current_time = now.time()
-
-    url = f"https://open-api.choiceqr.com/api/v1/reservations"
-    params = {
-        "token": CHOICE_API_TOKEN,
-        "start_date": today_str,
-        "end_date": today_str
-    }
-
+    url = f"https://api.choiceqr.com/api/integration/v1/analytics/revenue?organization_id={ORG_ID}&venue_id={VENUE_ID}"
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, headers=CHOICE_HEADERS)
         data = response.json()
 
-        if not isinstance(data, list):
-            await message.answer("Ошибка: неверный формат ответа от Choice API.")
-            return
-
-        bookings = []
-        for item in data:
-            dt_str = item.get("dateTime", "")
-            try:
-                dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00")).astimezone()
-                if dt.date() == now.date() and dt.time() >= current_time:
-                    name = item.get("customer", {}).get("name", "Без имени")
-                    persons = item.get("personCount", "?")
-                    time_only = dt.strftime("%H:%M")
-                    bookings.append(f"{time_only} — {name} ({persons} чел.)")
-            except Exception as e:
-                continue  # пропускаем ошибочные даты
-
-        if bookings:
-            result = "\n".join(bookings)
+        if response.status_code == 200 and "revenue" in data:
+            revenue = data["revenue"]
+            await message.answer(f"Выторг за день: {revenue} ₽")
         else:
-            result = "Нет предстоящих броней на сегодня."
-
-        await message.answer(f"Бронирование за сегодня:\n{result}")
-
+            await message.answer("Ошибка: неверный формат ответа от Choice API.")
     except Exception as e:
-        logging.error(f"Ошибка запроса: {e}")
-        await message.answer("Произошла ошибка при получении данных.")
+        await message.answer(f"Ошибка при получении выторга: {e}")
 
-# Запуск
+
+# ==== БРОНИРОВАНИЕ ====
+@dp.message_handler(lambda message: message.text == "Бронирование")
+async def handle_bookings(message: types.Message):
+    await message.answer("Получаю бронирования...")
+
+    url = f"https://api.choiceqr.com/api/integration/v1/venues/{VENUE_ID}/bookings"
+    try:
+        response = requests.get(url, headers=CHOICE_HEADERS)
+        data = response.json()
+
+        if response.status_code == 200 and isinstance(data, list):
+            count = len(data)
+            await message.answer(f"Всего бронирований: {count}")
+        else:
+            await message.answer("Ошибка: неверный формат ответа от Choice API.")
+    except Exception as e:
+        await message.answer(f"Ошибка при получении бронирований: {e}")
+
+
+# ==== ЗАПУСК ====
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
