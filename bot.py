@@ -1,73 +1,80 @@
 import logging
-import requests
+import os
 from aiogram import Bot, Dispatcher, types, executor
+import requests
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-# ==== НАСТРОЙКИ ====
-API_TOKEN = 'ВАШ_ТОКЕН_БОТА'
-CHOICE_TOKEN = 'ВАШ_CHOICE_API_ТОКЕН'
-CHOICE_HEADERS = {
-    'Authorization': f'Bearer {CHOICE_TOKEN}',
-    'Content-Type': 'application/json'
-}
-ORG_ID = 'ВАШ_ORG_ID'  # Замените на ваш ID организации
-VENUE_ID = 'ВАШ_VENUE_ID'  # Замените на ID точки
-
-# ==== ЛОГИ ====
+# Включаем логирование
 logging.basicConfig(level=logging.INFO)
 
-# ==== ИНИЦИАЛИЗАЦИЯ ====
-bot = Bot(token=API_TOKEN)
+# Получение токенов из переменных окружения
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
+POSTER_TOKEN = os.getenv("POSTER_TOKEN")
+GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
+CHOICE_API_TOKEN = os.getenv("CHOICE_API_TOKEH")
+
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
-# ==== КНОПКИ ====
-keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-keyboard.add("Бронирование", "Выторг за день")
-
-
-# ==== ОБРАБОТКА /start ====
-@dp.message_handler(commands=['start'])
-async def cmd_start(message: types.Message):
+# Команда /start
+@dp.message_handler(commands=["start"])
+async def start_handler(message: types.Message):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add("Выторг за день", "Бронирование")
     await message.answer("Выберите опцию:", reply_markup=keyboard)
 
-
-# ==== ВЫТОРГ ЗА ДЕНЬ ====
+# Кнопка "Выторг за день"
 @dp.message_handler(lambda message: message.text == "Выторг за день")
 async def handle_revenue(message: types.Message):
-    await message.answer("Получаю выторг...")
+    await message.answer("Функция выторга ещё не подключена.")
 
-    url = f"https://api.choiceqr.com/api/integration/v1/analytics/revenue?organization_id={ORG_ID}&venue_id={VENUE_ID}"
-    try:
-        response = requests.get(url, headers=CHOICE_HEADERS)
-        data = response.json()
-
-        if response.status_code == 200 and "revenue" in data:
-            revenue = data["revenue"]
-            await message.answer(f"Выторг за день: {revenue} ₽")
-        else:
-            await message.answer("Ошибка: неверный формат ответа от Choice API.")
-    except Exception as e:
-        await message.answer(f"Ошибка при получении выторга: {e}")
-
-
-# ==== БРОНИРОВАНИЕ ====
+# Кнопка "Бронирование"
 @dp.message_handler(lambda message: message.text == "Бронирование")
-async def handle_bookings(message: types.Message):
+async def handle_booking(message: types.Message):
     await message.answer("Получаю бронирования...")
 
-    url = f"https://api.choiceqr.com/api/integration/v1/venues/{VENUE_ID}/bookings"
     try:
-        response = requests.get(url, headers=CHOICE_HEADERS)
+        # Текущая дата и время в Киеве
+        now = datetime.now(ZoneInfo("Europe/Kyiv"))
+        today_date = now.strftime("%Y-%m-%d")
+
+        headers = {
+            "Authorization": f"Bearer {CHOICE_API_TOKEN}"
+        }
+
+        url = "https://api.choiceqr.com/api/v1/bookings"
+        params = {
+            "date": today_date
+        }
+
+        response = requests.get(url, headers=headers, params=params)
         data = response.json()
 
-        if response.status_code == 200 and isinstance(data, list):
-            count = len(data)
-            await message.answer(f"Всего бронирований: {count}")
-        else:
+        if not isinstance(data, list):
             await message.answer("Ошибка: неверный формат ответа от Choice API.")
+            return
+
+        bookings = []
+
+        for booking in data:
+            booking_time = datetime.fromisoformat(booking["dateTime"])
+            if booking_time > now:
+                name = booking["customerName"]
+                time = booking_time.strftime("%H:%M")
+                guests = booking["guestsCount"]
+                bookings.append(f"👤 {name} — {time} — {guests} чел.")
+
+        if bookings:
+            response_text = "\n".join(bookings)
+        else:
+            response_text = "Нет записей."
+
+        await message.answer(f"Бронирование за сегодня:\n{response_text}")
+
     except Exception as e:
-        await message.answer(f"Ошибка при получении бронирований: {e}")
+        logging.exception("Ошибка при получении бронирований")
+        await message.answer("Произошла ошибка при получении данных.")
 
-
-# ==== ЗАПУСК ====
-if __name__ == '__main__':
+if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
