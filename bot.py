@@ -1,108 +1,78 @@
 import os
+import logging
+from datetime import datetime, timezone
 import requests
-from aiogram import Bot, Dispatcher, types, executor
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from datetime import datetime, timezone, timedelta
+from aiogram import Bot, Dispatcher, executor, types
 
-# --- Зависимости от Environment / Апи-токены ---
-POSTER_TOKEN = os.getenv('POSTER_TOKEN')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-GROUP_CHAT_ID = int(os.getenv('GROUP_CHAT_ID'))
+# Logging
+logging.basicConfig(level=logging.INFO)
 
-# Токен Choice (прямо вставлен как ты просил)
-CHOICE_API_TOKEN = "VlFmffA-HWXnYEm-cOXRIze-FDeVdAw"
+# Read tokens from environment
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHOICE_TOKEN = os.getenv("CHOICE_TOKEN")
 
-# --- Telegram Bot и Dispatcher ---
-bot = Bot(token=TELEGRAM_TOKEN)
+# Check token existence
+if not BOT_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN not found in environment variables")
+if not CHOICE_TOKEN:
+    raise ValueError("CHOICE_TOKEN not found in environment variables")
+
+# Init bot and dispatcher
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
-# --- Клавиатура с двумя кнопками ---
-keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-keyboard.add(KeyboardButton("Виторг за день"))
-keyboard.add(KeyboardButton("Бронирование"))
+# API endpoint
+CHOICE_API_URL = "https://open-api.choiceqr.com/api/bookings/list"
 
-# --- Poster: выторг по официантам ---
-def fetch_waiters_sales():
-    today = datetime.now().strftime('%Y%m%d')
-    url = (
-        f'https://joinposter.com/api/dash.getWaitersSales?'
-        f'token={POSTER_TOKEN}&dateFrom={today}&dateTo={today}'
-    )
+# Start command
+@dp.message_handler(commands=['start'])
+async def send_welcome(message: types.Message):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add("\ud83d\udcc5 \u0411\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435")
+    await message.answer("\u041f\u0440\u0438\u0432\u0435\u0442! \u0427\u0442\u043e \u0445\u043e\u0447\u0435\u0448\u044c \u0441\u0434\u0435\u043b\u0430\u0442\u044c?", reply_markup=keyboard)
+
+# Handler for "\ud83d\udcc5 \u0411\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435"
+@dp.message_handler(lambda message: message.text == "\ud83d\udcc5 \u0411\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435")
+async def list_bookings(message: types.Message):
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    payload = {
+        "from": today_start.isoformat(),
+        "till": today_end.isoformat(),
+        "periodField": "bookingDt"
+    }
+
+    headers = {
+        "Authorization": f"Bearer {CHOICE_TOKEN}"
+    }
+
     try:
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        return r.json().get('response', [])
+        response = requests.get(CHOICE_API_URL, params=payload, headers=headers)
+        response.raise_for_status()
+        bookings = response.json()
+
+        upcoming = []
+        for b in bookings:
+            booking_time = datetime.fromisoformat(b['bookingDt'].replace('Z', '+00:00'))
+            if booking_time > now:
+                name = b.get('customerName', '---')
+                people = b.get('numberOfPersons', '?')
+                time = booking_time.strftime("%H:%M")
+                upcoming.append(f"{name} в {time}, {people} чел.")
+
+        if upcoming:
+            reply = "\u0411\u0440\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f \u043d\u0430 \u0441\u0435\u0433\u043e\u0434\u043d\u044f (\u043f\u043e\u0441\u043b\u0435 \u0442\u0435\u043a\u0443\u0449\u0435\u0433\u043e \u0432\u0440\u0435\u043c\u0435\u043d\u0438):\n" + "\n".join(upcoming)
+        else:
+            reply = "\u041d\u0435\u0442 \u0437\u0430\u043f\u0438\u0441\u0435\u0439 \u043d\u0430 \u043e\u0441\u0442\u0430\u0432\u0448\u0435\u0435\u0441\u044f \u0432\u0440\u0435\u043c\u044f \u0441\u0435\u0433\u043e\u0434\u043d\u044f."
+
+        await message.answer(reply)
+
     except Exception as e:
-        print(f"[Poster API error] {e}")
-        return []
+        logging.exception("Error while fetching bookings")
+        await message.answer("\u041e\u0448\u0438\u0431\u043a\u0430 \u043f\u0440\u0438 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u0438\u0438 \u0434\u0430\u043d\u043d\u044b\u0445. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0441\u043d\u043e\u0432\u0430.")
 
-def format_waiters_report(data):
-    if not data:
-        return f"Виторг за {datetime.now():%d.%m.%Y}:\nНет данных."
-    rows = sorted(data, key=lambda x: float(x.get('revenue', 0)), reverse=True)
-    lines = [f"Виторг за {datetime.now():%d.%m.%Y}:"]
-    for i, row in enumerate(rows, 1):
-        name = row.get('name', 'Невідомий').strip()
-        rev = int(float(row.get('revenue', 0)))
-        lines.append(f"{i}. {name}: {rev} грн")
-    return "\n".join(lines)
-
-# --- Choice: бронирования за сегодня ---
-def fetch_today_bookings():
-    # Формируем диапазон с 00:00 до 23:59 UTC
-    now = datetime.utcnow()
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + "Z"
-    end = now.replace(hour=23, minute=59, second=59, microsecond=0).isoformat() + "Z"
-    url = "https://open-api.choiceqr.com/bookings/list"
-    headers = {"Authorization": f"Bearer {CHOICE_API_TOKEN}"}
-    params = {"from": start, "till": end, "periodField": "bookingDt"}
-    try:
-        r = requests.get(url, headers=headers, params=params, timeout=15)
-        r.raise_for_status()
-        return r.json()  # ожидаем список бронирований
-    except Exception as e:
-        print(f"[Choice API error] {e}")
-        return []
-
-def format_booking_report(data):
-    if not isinstance(data, list) or not data:
-        return "Бронирование за сегодня:\nНет записей."
-    lines = [f"Бронирование на сегодня ({datetime.now():%d.%m.%Y}):"]
-    # Конверсия UTC -> Kyiv (UTC+3 летом)
-    kyiv_tz = timezone(timedelta(hours=3))
-    for i, b in enumerate(data, 1):
-        cust = b.get('customer', {}).get('name', 'Клиент')
-        dt_raw = b.get('dateTime', {}).get('$date', "")
-        person_count = b.get('personCount', 0)
-        try:
-            dt = datetime.fromisoformat(dt_raw.replace("Z", "+00:00"))
-            dt_local = dt.astimezone(kyiv_tz)
-            time_str = dt_local.strftime("%H:%M")
-        except Exception:
-            time_str = dt_raw[:16] if dt_raw else "??:??"
-        lines.append(f"{i}. {cust} — ⏰ {time_str} — 👥 {person_count}")
-    return "\n".join(lines)
-
-# --- Handlers ---
-@dp.message_handler(commands=['start', 'report'])
-async def handle_start(message: types.Message):
-    await message.answer("Выберите действие:", reply_markup=keyboard)
-
-@dp.message_handler(lambda m: m.text == "Виторг за день")
-async def handler_sales(message: types.Message):
-    report = format_waiters_report(fetch_waiters_sales())
-    await message.answer(report, reply_markup=keyboard)
-
-@dp.message_handler(lambda m: m.text == "Бронирование")
-async def handler_booking(message: types.Message):
-    bookings = fetch_today_bookings()
-    report = format_booking_report(bookings)
-    await message.answer(report, reply_markup=keyboard)
-
-# --- Startup ---
-async def on_startup(dp):
-    await bot.delete_webhook(drop_pending_updates=True)
-    print("[Bot started, polling activated]")
-
+# Main entry
 if __name__ == '__main__':
-    executor.start_polling(dp, on_startup=on_startup)
+    executor.start_polling(dp, skip_updates=True)
